@@ -15,7 +15,3 @@ def format_daily_news(news_list: list[NewsItem], ai_summary: str = "") -> str:
         lines.append(f"   来源：{item.source}")
         lines.append("")
     return "\n".join(lines).strip()
-
-
-def format_source_list(registry: dict) -> str:
-    return "当前版本仅保留 AI 整合模式，不再维护固定新闻源列表。"

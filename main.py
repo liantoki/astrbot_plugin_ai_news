@@ -47,7 +47,7 @@ def _safe_text(value: str, limit: int) -> str:
     "\u0041\u0049 \u65b0\u95fb\u6574\u5408",
     "\u4f7f\u7528 AstrBot \u641c\u7d22\u5de5\u5177\u548c\u6307\u5b9a AI \u6a21\u578b\u6574\u5408\u6307\u5b9a\u9886\u57df\u65b0\u95fb\u3002",
     "1.0.0",
-    "https://github.com/yourname/astrbot_plugin_ai_news",
+    "https://github.com/liantoki/astrbot_plugin_ai_news",
 )
 class AINewsPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
