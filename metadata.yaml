@@ -1,6 +1,7 @@
 name: astrbot_plugin_ai_news
-desc: 使用 AstrBot 搜索工具和指定 AI 模型整合多领域新闻，支持图片卡片和文字降级。
-version: 1.0.0
+desc: 固定 RSS/Atom/JSON Feed 信息源优先的 AstrBot AI 新闻整合插件，支持搜索补充、领域别名、去重评分、分批 AI 改写、图片卡片和定时推送。
+version: 1.1.0
 author: liantoki
 repo: https://github.com/liantoki/astrbot_plugin_ai_news
 main: main.py
+logo: logo.png
