@@ -1,5 +1,9 @@
 # astrbot_plugin_ai_news
 
+<p align="center">
+  <img src="logo.png" alt="astrbot_plugin_ai_news logo" width="160">
+</p>
+
 AstrBot AI 新闻整合插件。插件优先从固定 RSS/Atom/JSON Feed 信息源抓取新闻，在候选不足时使用搜索 API 补充，再进行去重、评分、AI 改写整合，并输出图片新闻卡片或文字消息。
 
 当前版本：`1.1.0`
@@ -178,4 +182,3 @@ astrbot_plugin_ai_news/fonts/NotoSansCJKsc-Regular.otf
 4. 自动下载开源 Noto CJK 字体到插件 `fonts/` 目录。
 
 如果字体加载或图片生成失败，会自动降级为文字新闻。
-
