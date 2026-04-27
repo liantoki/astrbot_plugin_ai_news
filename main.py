@@ -187,7 +187,7 @@ def _safe_text(value: str, limit: int) -> str:
     "astrbot_plugin_ai_news",
     "\u0041\u0049 \u65b0\u95fb\u6574\u5408",
     "\u56fa\u5b9a RSS/Atom/JSON Feed \u4fe1\u606f\u6e90\u4f18\u5148\uff0c\u652f\u6301\u641c\u7d22\u8865\u5145\u3001\u53bb\u91cd\u8bc4\u5206\u548c\u5206\u6279 AI \u6539\u5199\u7684\u591a\u9886\u57df\u65b0\u95fb\u6574\u5408\u63d2\u4ef6\u3002",
-    "1.1.0",
+    "1.1.1",
     "https://github.com/liantoki/astrbot_plugin_ai_news",
 )
 class AINewsPlugin(Star):
@@ -446,9 +446,13 @@ class AINewsPlugin(Star):
         batch_index = 0
         while batch_index < len(batches) and len(kept) < target_count:
             wave = batches[batch_index : batch_index + self.rewrite_concurrency]
+            wave_start = batch_index
             batch_index += len(wave)
             rewritten_batches = await asyncio.gather(
-                *(self._rewrite_and_filter_batch(batch, event, topics) for batch in wave),
+                *(
+                    self._rewrite_and_filter_batch(batch, event, topics, wave_start + offset)
+                    for offset, batch in enumerate(wave)
+                ),
                 return_exceptions=True,
             )
             for result in rewritten_batches:
@@ -468,14 +472,14 @@ class AINewsPlugin(Star):
         batch: list[NewsItem],
         event: AstrMessageEvent | None,
         topics: list[str],
+        batch_id: int = 0,
     ) -> list[NewsItem]:
-        rewritten = await self._translate_news_to_chinese(list(batch), event)
+        rewritten = await self._translate_news_to_chinese(list(batch), event, batch_id=batch_id)
         rewritten = self._filter_relevant_after_rewrite(rewritten, topics)
         return self._deduplicate(self._filter_recent_news(rewritten))
 
     async def _generate_integrated_news(self, event: AstrMessageEvent | None, topics: list[str]) -> list[NewsItem]:
-        all_items: list[NewsItem] = []
-        for topic in topics:
+        async def collect_topic(topic: str) -> list[NewsItem]:
             pool_size = max(self.news_count, self.news_count * self.candidate_pool_multiplier)
             fixed_items = await self._run_fixed_source_rounds(topic)
             topic_items = list(fixed_items)
@@ -490,9 +494,22 @@ class AINewsPlugin(Star):
                 f"[AI News] topic={topic} fixed={len(fixed_items)} "
                 f"combined={len(topic_items)} pool={pool_size}"
             )
+            selected = []
             for item in topic_items[:pool_size]:
                 item.tags = list(dict.fromkeys([topic, *getattr(item, "tags", [])]))
-                all_items.append(item)
+                selected.append(item)
+            return selected
+
+        topic_results = await asyncio.gather(
+            *(collect_topic(topic) for topic in topics),
+            return_exceptions=True,
+        )
+        all_items: list[NewsItem] = []
+        for topic, result in zip(topics, topic_results):
+            if isinstance(result, Exception):
+                logger.warning(f"[AI News] topic collection failed topic={topic} error={_safe_text(result, 200)}")
+                continue
+            all_items.extend(result)
         return self._rank_news_items(self._deduplicate(all_items), ",".join(topics))
 
     def _filter_relevant_after_rewrite(self, news_list: list[NewsItem], topics: list[str]) -> list[NewsItem]:
@@ -1087,43 +1104,47 @@ class AINewsPlugin(Star):
         params = self._build_search_tool_params(topic, round_idx)
         timeout = aiohttp.ClientTimeout(total=self.fetch_timeout)
         headers = {"User-Agent": "AstrBot-AINews/1.0"}
-        collected: list[dict] = []
-        async with aiohttp.ClientSession(timeout=timeout, headers=headers, trust_env=True) as session:
-            for provider in providers:
-                for api_key, api_key_source in self._get_direct_search_api_key_candidates(provider):
-                    logger.warning(
-                        f"[AI News] direct search api key provider={provider} "
-                        f"{self._format_api_key_debug(provider, api_key, api_key_source)}"
-                    )
-                    if self.use_astrbot_search_tools:
-                        items = await self._call_astrbot_builtin_search(provider, params, api_key)
-                        self._log_raw_search_items(provider, "astrbot_builtin", round_idx, items)
-                        collected.extend(items)
-                    if provider == "tavily" and api_key:
-                        items = await self._call_tavily_search(session, params, api_key)
-                    elif provider == "bocha" and api_key:
-                        items = await self._call_bocha_search(session, params, api_key)
-                    elif provider == "baidu" and api_key:
-                        items = await self._call_baidu_search(session, params, api_key)
-                    else:
-                        continue
-                    self._log_raw_search_items(provider, "direct_api", round_idx, items)
+
+        async def run_provider(provider: str, session) -> list[dict]:
+            collected: list[dict] = []
+            for api_key, api_key_source in self._get_direct_search_api_key_candidates(provider):
+                logger.warning(
+                    f"[AI News] direct search api key provider={provider} "
+                    f"{self._format_api_key_debug(provider, api_key, api_key_source)}"
+                )
+                if self.use_astrbot_search_tools:
+                    items = await self._call_astrbot_builtin_search(provider, params, api_key)
+                    self._log_raw_search_items(provider, "astrbot_builtin", round_idx, items)
                     collected.extend(items)
+                if provider == "tavily" and api_key:
+                    items = await self._call_tavily_search(session, params, api_key)
+                elif provider == "bocha" and api_key:
+                    items = await self._call_bocha_search(session, params, api_key)
+                elif provider == "baidu" and api_key:
+                    items = await self._call_baidu_search(session, params, api_key)
+                else:
+                    continue
+                self._log_raw_search_items(provider, "direct_api", round_idx, items)
+                collected.extend(items)
+            return collected
+
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers, trust_env=True) as session:
+            provider_results = await asyncio.gather(
+                *(run_provider(provider, session) for provider in providers),
+                return_exceptions=True,
+            )
+
+        collected: list[dict] = []
+        for provider, result in zip(providers, provider_results):
+            if isinstance(result, Exception):
+                logger.warning(f"[AI News] direct search provider failed provider={provider} error={_safe_text(result, 200)}")
+                continue
+            collected.extend(result)
         return collected
 
     def _log_raw_search_items(self, provider: str, source: str, round_idx: int, items: list[dict]):
         count = len(items) if items else 0
         logger.info(f"[AI News] {provider} {source} round={round_idx} returned {count} raw candidates")
-
-    async def _parse_raw_search_items(self, provider: str, source: str, items: list[dict]) -> list[NewsItem]:
-        if not items:
-            return []
-        parsed = await self._parse_and_verify(json.dumps({"results": items}, ensure_ascii=False))
-        if not parsed:
-            logger.info(f"[AI News] {provider} {source} returned {len(items)} candidates but none passed freshness/validity filters")
-        else:
-            logger.info(f"[AI News] {provider} {source} returned {len(items)} candidates, kept {len(parsed)} after freshness/validity filters")
-        return parsed
 
     async def _call_astrbot_builtin_search(self, provider: str, params: dict, api_key: str) -> list[dict]:
         if not api_key:
@@ -1290,10 +1311,6 @@ class AINewsPlugin(Star):
             return ""
         text = re.sub(r"\s+", " ", text).strip()
         return text[:limit]
-
-    def _get_direct_search_api_key(self, provider: str) -> str:
-        key, _ = self._get_direct_search_api_key_with_source(provider)
-        return key
 
     def _format_api_key_diag(self, provider: str) -> str:
         key, source = self._get_direct_search_api_key_with_source(provider)
@@ -1782,7 +1799,12 @@ class AINewsPlugin(Star):
             resp = await self.context.get_using_provider().text_chat(prompt=prompt, session_id="ai_news_integrated")
         return await self._parse_and_verify(resp.completion_text if resp else "")
 
-    async def _translate_news_to_chinese(self, news_list: list[NewsItem], event: AstrMessageEvent | None) -> list[NewsItem]:
+    async def _translate_news_to_chinese(
+        self,
+        news_list: list[NewsItem],
+        event: AstrMessageEvent | None,
+        batch_id: int = 0,
+    ) -> list[NewsItem]:
         if not news_list:
             return news_list
         payload = [
@@ -1816,7 +1838,8 @@ class AINewsPlugin(Star):
             if provider_id:
                 resp = await self.context.llm_generate(chat_provider_id=provider_id, prompt=prompt)
             else:
-                resp = await self.context.get_using_provider().text_chat(prompt=prompt, session_id="ai_news_rewrite_card")
+                session_id = f"ai_news_rewrite_card_{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{batch_id}"
+                resp = await self.context.get_using_provider().text_chat(prompt=prompt, session_id=session_id)
             translated = self._parse_translation_json(resp.completion_text if resp else "")
         except Exception as exc:
             logger.warning(f"[AI News] rewrite news failed: {exc}")
@@ -1849,60 +1872,6 @@ class AINewsPlugin(Star):
         if len(kept) != len(news_list):
             logger.info(f"[AI News] rewrite kept {len(kept)} of {len(news_list)} candidates")
         return kept
-
-    async def _translate_news_to_chinese(self, news_list: list[NewsItem], event: AstrMessageEvent | None) -> list[NewsItem]:
-        if not news_list:
-            return news_list
-        payload = [
-            {
-                "idx": idx,
-                "title": item.title,
-                "description": item.description,
-                "source": item.source,
-                "url": item.url,
-                "published_at": item.published_at.isoformat() if item.published_at else "",
-            }
-            for idx, item in enumerate(news_list)
-        ]
-        prompt = (
-            f"Today is {datetime.now().strftime('%Y-%m-%d')}. Rewrite every candidate into Simplified Chinese for a compact news card. "
-            "Return one output item for every input idx; do not omit items. "
-            "The title must be a rewritten Chinese news point, 10-22 Chinese characters when possible. "
-            "Do not copy the webpage title, site name, column name, hashtags, markdown, dates, or English headline fragments. "
-            "The description must be one natural Chinese sentence, 25-55 Chinese characters when possible, explaining the concrete latest development. "
-            "If the original candidate is English, translate and rewrite it fully into Chinese. "
-            "Keep source and url unchanged. Return strict JSON only, with this schema: "
-            '{"news":[{"idx":0,"title":"中文短新闻点","description":"一句话说明最新进展","source":"source","url":"https://..."}]}. '
-            "Input JSON: "
-            + json.dumps({"news": payload}, ensure_ascii=False)
-        )
-        try:
-            provider_id = await self._resolve_provider_id(event)
-            if provider_id:
-                resp = await self.context.llm_generate(chat_provider_id=provider_id, prompt=prompt)
-            else:
-                resp = await self.context.get_using_provider().text_chat(prompt=prompt, session_id="ai_news_rewrite_card")
-            translated = self._parse_translation_json(resp.completion_text if resp else "")
-        except Exception as exc:
-            logger.warning(f"[AI News] rewrite news failed: {exc}")
-            return news_list
-
-        by_idx = {item["idx"]: item for item in translated if isinstance(item.get("idx"), int)}
-        missing = 0
-        for idx, item in enumerate(news_list):
-            data = by_idx.get(idx)
-            if not data:
-                missing += 1
-                continue
-            title = _safe_text(data.get("title", ""), 28)
-            desc = _safe_text(data.get("description", ""), 60)
-            if title:
-                item.title = title
-            if desc:
-                item.description = desc
-        if missing:
-            logger.warning(f"[AI News] rewrite response missed {missing} of {len(news_list)} candidates")
-        return news_list
 
     def _parse_translation_json(self, text: str) -> list[dict]:
         data = self._load_first_json_payload(text, ("news",))
@@ -2226,7 +2195,11 @@ class AINewsPlugin(Star):
         return _split_csv(text, [])
 
     def _save_runtime_config(self):
-        self.config["push_targets"] = ",".join(self.push_targets)
+        push_settings = self.config.get("push_settings", {}) or {}
+        if not isinstance(push_settings, dict):
+            push_settings = {}
+        push_settings["push_targets"] = ",".join(self.push_targets)
+        self.config["push_settings"] = push_settings
         self.config.save_config()
 
     @staticmethod

@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.1.1
+
+### 新增
+
+- 更换为更明亮的蓝色插件图标，并在 README 顶部展示图标。
+- 配置页「推送目标」提示补充群聊和私聊 session ID 的区别与示例。
+
+### 优化
+
+- 多领域新闻收集改为并行执行，减少用户指定多个领域时的串行等待。
+- 直连搜索 provider 改为并行请求，降低 Tavily、Bocha、Baidu 顺序等待造成的耗时。
+- AI 改写批次使用独立 session ID，避免部分 provider 按同一会话串行处理并发请求。
+- 删除重复的 `_translate_news_to_chinese` 实现，恢复带 `keep=false` 的候选过滤逻辑。
+
+### 修复
+
+- `/ainews_sub` 和 `/ainews_unsub` 现在写入 `push_settings.push_targets`，与配置界面字段保持一致。
+- 清理未引用的 `formatter.py` 和未使用辅助方法。
+
 ## 1.1.0
 
 ### 为什么改
