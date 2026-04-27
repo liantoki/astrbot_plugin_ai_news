@@ -157,6 +157,12 @@ DEFAULT_TOPIC_ALIAS_LINES = [
     f"{canonical}|{','.join(sorted(aliases))}"
     for canonical, aliases in TOPIC_ALIASES.items()
 ]
+DEFAULT_ASTRBOT_CONFIG_PATHS = [
+    "/AstrBot/data/config",
+    "/AstrBot/data/cmd_config.json",
+    "data/config",
+    "data/cmd_config.json",
+]
 
 
 def _split_csv(value, default=None) -> list[str]:
@@ -260,16 +266,16 @@ class AINewsPlugin(Star):
             g(
                 search,
                 "astrbot_config_paths",
-                "/AstrBot/data/config",
+                ",".join(DEFAULT_ASTRBOT_CONFIG_PATHS),
             ),
-            ["/AstrBot/data/config"],
+            DEFAULT_ASTRBOT_CONFIG_PATHS,
         )
         self.astrbot_config_paths = [path for path in self.astrbot_config_paths if path]
         if not self.astrbot_config_paths:
-            self.astrbot_config_paths = ["/AstrBot/data/config"]
+            self.astrbot_config_paths = list(DEFAULT_ASTRBOT_CONFIG_PATHS)
         old_default_paths = ["/AstrBot/data/config", "/AstrBot/data/plugins", "./data/config", "./data/plugins"]
         if self.astrbot_config_paths == old_default_paths:
-            self.astrbot_config_paths = ["/AstrBot/data/config"]
+            self.astrbot_config_paths = list(DEFAULT_ASTRBOT_CONFIG_PATHS)
         self.use_astrbot_search_tools = _to_bool(g(search, "use_astrbot_search_tools", True), True)
 
         self.fetch_timeout = int(g(push, "fetch_timeout", 20))
