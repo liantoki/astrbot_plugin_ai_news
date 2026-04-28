@@ -129,6 +129,41 @@ LOW_VALUE_NEWS_PATTERNS = (
     "落地",
     "赋能",
 )
+HARD_REJECT_TITLE_PATTERNS = (
+    "市场消息",
+    "据市场消息",
+    "消息称",
+    "8点1氪",
+    "氪星晚报",
+    "早报",
+    "晚报",
+    "日报",
+    "周报",
+    "月报",
+    "导读",
+    "一览",
+    "盘点",
+    "汇总",
+    "合集",
+    "今日看点",
+    "新闻速览",
+    "top3",
+    "top 3",
+    "top10",
+    "top 10",
+)
+SOFT_REJECT_TITLE_PATTERNS = (
+    "最大威胁",
+    "竞争威胁",
+    "可能",
+    "预计",
+    "预测",
+    "即将",
+    "将开庭",
+    "将测试",
+    "拟",
+    "或将",
+)
 DEFAULT_FIXED_NEWS_SOURCE_CONFIGS = [
     {
         "__template_key": "rss_source",
@@ -193,7 +228,7 @@ def _safe_text(value: str, limit: int) -> str:
     "astrbot_plugin_ai_news",
     "\u0041\u0049 \u65b0\u95fb\u6574\u5408",
     "\u56fa\u5b9a RSS/Atom/JSON Feed \u4fe1\u606f\u6e90\u4f18\u5148\uff0c\u652f\u6301\u641c\u7d22\u8865\u5145\u3001\u53bb\u91cd\u8bc4\u5206\u548c\u5206\u6279 AI \u6539\u5199\u7684\u591a\u9886\u57df\u65b0\u95fb\u6574\u5408\u63d2\u4ef6\u3002",
-    "1.1.1",
+    "1.1.2",
     "https://github.com/liantoki/astrbot_plugin_ai_news",
 )
 class AINewsPlugin(Star):
@@ -480,7 +515,11 @@ class AINewsPlugin(Star):
         topics: list[str],
         batch_id: int = 0,
     ) -> list[NewsItem]:
+        batch = self._filter_hard_reject_news(batch)
+        if not batch:
+            return []
         rewritten = await self._translate_news_to_chinese(list(batch), event, batch_id=batch_id)
+        rewritten = self._filter_hard_reject_news(rewritten)
         rewritten = self._filter_relevant_after_rewrite(rewritten, topics)
         return self._deduplicate(self._filter_recent_news(rewritten))
 
@@ -529,6 +568,18 @@ class AINewsPlugin(Star):
                 dropped += 1
         if dropped:
             logger.info(f"[AI News] dropped {dropped} off-topic rewritten candidates")
+        return kept
+
+    def _filter_hard_reject_news(self, news_list: list[NewsItem]) -> list[NewsItem]:
+        kept = []
+        dropped = 0
+        for item in news_list:
+            if self._is_hard_reject_news_item(item):
+                dropped += 1
+                continue
+            kept.append(item)
+        if dropped:
+            logger.info(f"[AI News] dropped {dropped} low-value aggregate news candidates")
         return kept
 
     def _migrate_default_fixed_sources(self, raw_sources, source_settings: dict):
@@ -870,6 +921,55 @@ class AINewsPlugin(Star):
     def _is_low_value_news_text(text: str) -> bool:
         normalized = str(text or "").lower()
         return any(pattern.lower() in normalized for pattern in LOW_VALUE_NEWS_PATTERNS)
+
+    @staticmethod
+    def _is_hard_reject_news_item(item: NewsItem) -> bool:
+        title = str(getattr(item, "title", "") or "").strip()
+        desc = str(getattr(item, "description", "") or "").strip()
+        normalized_title = title.lower()
+        combined = f"{title} {desc}"
+        if any(pattern.lower() in normalized_title for pattern in HARD_REJECT_TITLE_PATTERNS):
+            return True
+        if any(pattern.lower() in normalized_title for pattern in SOFT_REJECT_TITLE_PATTERNS):
+            if not AINewsPlugin._has_concrete_ai_progress(combined):
+                return True
+        if "ipo" in combined.lower() and not AINewsPlugin._has_concrete_ai_progress(combined):
+            return True
+        if re.search(r"^\s*(top|TOP)\s*\d+\b", title):
+            return True
+        if len(re.findall(r"[；;｜|]", title)) >= 2:
+            return True
+        if len(re.findall(r"[；;｜|]", combined)) >= 4:
+            return True
+        return False
+
+    @staticmethod
+    def _has_concrete_ai_progress(text: str) -> bool:
+        markers = (
+            "发布",
+            "推出",
+            "上线",
+            "开源",
+            "更新",
+            "升级",
+            "获批",
+            "完成",
+            "收购",
+            "融资",
+            "投资",
+            "部署",
+            "接入",
+            "商用",
+            "量产",
+            "测试完成",
+            "launched",
+            "released",
+            "open source",
+            "raised",
+            "acquired",
+        )
+        normalized = str(text or "").lower()
+        return any(marker in normalized for marker in markers)
 
     @staticmethod
     def _xml_child_text(node, local_name: str) -> str:
@@ -1827,13 +1927,15 @@ class AINewsPlugin(Star):
         prompt = (
             f"今天是 {datetime.now().strftime('%Y-%m-%d')}。请把候选搜索结果整理成真正适合新闻卡片的简体中文内容。"
             "不要直译或照抄网页标题；title 必须改写成 10-22 个汉字的新闻点，去掉站点名、栏目名、日期段、导读、周报、月报等字样。"
-            "description 写成 25-55 字的一句话，说明最新进展本身，不要复述“今日新闻/早间新闻/欢迎收看”。"
+            "description 写成 18-36 个汉字的一句话短摘要，必须能放进新闻卡片两行内；优先压缩表达，不要省略号，不要半句话。"
+            "description 不要写来源、日期、媒体名、记者名，不要复述“今日新闻/早间新闻/欢迎收看”。"
             f"只保留今天或近 {self.max_news_age_days} 天内发生/发布的新闻；旧闻、综述、导读、预测盘点、教程资料、无法看出时效的内容 keep=false。"
+            "只保留具体 AI 进展：产品/模型发布、开源、融资、收购、监管决定、商业部署、研究突破等。"
+            "纯传闻、市场消息、IPO进度猜测、诉讼开庭预告、人物观点、竞争威胁评论、未来测试计划，除非同时包含今天确认的新动作，否则 keep=false。"
             "Future event previews are not valid unless the article is about a new announcement made today. "
             "Remove duplicate or near-duplicate stories that describe the same event, company action, funding, ranking, or policy. "
             "Remove off-topic items even if the search result was returned for the topic. "
-            "The input has already passed hard freshness, link, and topic filters. Prefer keep=true for all candidates unless a candidate is clearly invalid. "
-            f"Try to keep at least {min(self.news_count, len(news_list))} candidates when possible. "
+            "Quality is more important than count; keep=false is better than filling the card with weak or marginal items. "
             "Keep source and url unchanged. Return strict JSON only, with this schema: "
             '{"news":[{"idx":0,"keep":true,"title":"短新闻点","description":"一句话最新进展","source":"source","url":"https://..."}]}. '
             "Input JSON: "
@@ -1853,28 +1955,18 @@ class AINewsPlugin(Star):
 
         by_idx = {item["idx"]: item for item in translated if isinstance(item.get("idx"), int)}
         kept = []
-        target_count = min(self.news_count, len(news_list))
         for idx, item in enumerate(news_list):
             data = by_idx.get(idx)
             if data and data.get("keep") is False:
                 continue
             if data:
                 title = _safe_text(data.get("title", ""), 28)
-                desc = _safe_text(data.get("description", ""), 60)
+                desc = self._compact_card_description(data.get("description", ""))
                 if title:
                     item.title = title
                 if desc:
                     item.description = desc
             kept.append(item)
-        if len(kept) < target_count:
-            kept_ids = {id(item) for item in kept}
-            for item in news_list:
-                if id(item) in kept_ids:
-                    continue
-                kept.append(item)
-                kept_ids.add(id(item))
-                if len(kept) >= target_count:
-                    break
         if len(kept) != len(news_list):
             logger.info(f"[AI News] rewrite kept {len(kept)} of {len(news_list)} candidates")
         return kept
@@ -1885,6 +1977,29 @@ class AINewsPlugin(Star):
             return []
         raw_items = data.get("news", []) if isinstance(data, dict) else data
         return raw_items if isinstance(raw_items, list) else []
+
+    @staticmethod
+    def _compact_card_description(value: str) -> str:
+        text = _safe_text(value, 80)
+        text = re.sub(r"^[^，。；;]{0,16}(消息|报道|获悉|称)[，:：]\s*", "", text)
+        text = re.sub(r"^\d{1,2}\s*月\s*\d{1,2}\s*日[，,]\s*", "", text)
+        text = re.sub(r"^据[^，。；;]{1,16}[，,]\s*", "", text)
+        text = re.sub(r"（[^）]{1,16}）", "", text)
+        text = re.sub(r"\([^)]{1,24}\)", "", text)
+        text = re.sub(r"\s+", " ", text).strip(" ，,。；;")
+        if len(text) <= 42:
+            return text
+
+        clauses = [part.strip() for part in re.split(r"[，,；;。]", text) if part.strip()]
+        compact = ""
+        for clause in clauses:
+            candidate = clause if not compact else f"{compact}，{clause}"
+            if len(candidate) > 42:
+                break
+            compact = candidate
+        if compact and len(compact) >= 12:
+            return compact
+        return text[:42].rstrip(" ，,；;")
 
     async def _resolve_provider_id(self, event: AstrMessageEvent | None) -> str:
         if self.ai_provider_id:
